@@ -2,9 +2,7 @@ services:
   app:
     volumes:
       # База знаний монтируется СТРОГО как RO (Read-Only)
-      - "/var/syncthing/inbox:/app/inbox:ro"
-      - "/var/syncthing/CFO_Brain:/app/CFO_Brain:ro"
-      - "/var/syncthing/00 System:/app/00_System:ro"
+      - /var/syncthing/vault:/app/vault:ro
 
       # Песочница агента (единственная RW зона для кэша и памяти)
       - "./data:/app/data:rw"
