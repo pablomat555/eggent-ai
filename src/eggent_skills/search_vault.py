@@ -1,4 +1,3 @@
-import os
 import re
 import json
 from pathlib import Path
@@ -11,110 +10,63 @@ def search_vault(
     fulltext_regex: Optional[str] = None,
     max_results: int = 10
 ) -> List[Dict]:
-    """
-    Optimized search for Obsidian vault with two-phase approach:
-    1. Pre-filter by filename and YAML metadata
-    2. Optional full-text search using regex
-    """
     results = []
-    metadata_pattern = re.compile(r'^---\n(.*?)\n---', re.DOTALL)
+    # Регулярка для захвата ТОЛЬКО YAML фронтматтера
+    frontmatter_pattern = re.compile(r'^---\n(.*?)\n---', re.DOTALL)
     
     try:
         vault_path = Path(search_path)
         for md_file in vault_path.rglob('*.md'):
+            # Фильтр по имени (включая игнор .stversions)
             if not re.match(filename_pattern, md_file.name):
                 continue
 
-            # Phase 1: Metadata parsing
-            with md_file.open('r', encoding='utf-8') as f:
-                content = f.read()
+            try:
+                with md_file.open('r', encoding='utf-8') as f:
+                    content = f.read()
+            except Exception:
+                continue
             
-            metadata_match = metadata_pattern.search(content)
-            file_meta = {}
-            if metadata_match:
-                try:
-                    meta_lines = metadata_match.group(1).split('\n')
-                    file_meta = {
-                        line.split(':', 1)[0].strip(): line.split(':', 1)[1].strip()
-                        for line in meta_lines if ':' in line
-                    }
-                except Exception as e:
-                    continue
+            # Извлекаем фронтматтер
+            fm_match = frontmatter_pattern.search(content)
+            frontmatter_text = fm_match.group(1) if fm_match else ""
 
-            # Apply metadata filters
+            # ФАЗА 1: Точный поиск по метаданным (YAML)
             if metadata_filters:
-                match = all(
-                    re.search(pattern, file_meta.get(key, ''), re.IGNORECASE)
-                    for key, pattern in metadata_filters.items()
-                )
-                if not match:
+                match_all = True
+                for key, pattern in metadata_filters.items():
+                    # Ищем совпадение паттерна строго внутри блока фронтматтера
+                    if not re.search(pattern, frontmatter_text, re.IGNORECASE):
+                        match_all = False
+                        break
+                if not match_all:
                     continue
 
-            # Phase 2: Full-text search
+            # ФАЗА 2: Поиск по остальному тексту (если запрошен)
             fragments = []
             if fulltext_regex:
-                try:
-                    text_content = content[metadata_match.end() if metadata_match else 0:]
-                    text_matches = re.finditer(fulltext_regex, text_content, re.DOTALL)
-                    fragments = [{
-                        'text': m.group(0),
-                        'start_line': text_content.count('\n', 0, m.start()) + 1,
-                        'end_line': text_content.count('\n', 0, m.end()) + 1
-                    } for m in text_matches]
-                except re.error:
-                    return [{'error': 'Invalid regex pattern'}]
+                # Читаем текст только после фронтматтера
+                text_content = content[fm_match.end() if fm_match else 0:]
+                text_matches = list(re.finditer(fulltext_regex, text_content, re.IGNORECASE))
+                
+                if not text_matches:
+                    continue # Пропускаем файл, если текст не найден
+                
+                # Добавляем контекст (фрагменты текста) для LLM
+                for m in text_matches[:2]:
+                    start = max(0, m.start() - 40)
+                    end = min(len(text_content), m.end() + 40)
+                    fragments.append(text_content[start:end].replace('\n', ' ').strip())
 
             results.append({
                 'path': str(md_file.relative_to(vault_path)),
-                'metadata': file_meta,
-                'fragments': fragments,
-                'fulltext_searched': fulltext_regex is not None
+                'fragments': fragments if fragments else None
             })
 
             if len(results) >= max_results:
                 break
 
     except Exception as e:
-        return [{'error': f'Search failed: {str(e)}'}]
+        return [{'error': str(e)}]
 
-    return results[:max_results]
-
-# JSON Schema for MCP registration
-MCP_SCHEMA = {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "title": "Vault Search Tool",
-    "description": "Optimized search for Obsidian vault with metadata filtering and regex fulltext search",
-    "type": "object",
-    "properties": {
-        "search_path": {
-            "type": "string",
-            "default": "/app/vault",
-            "description": "Root path for searching"
-        },
-        "filename_pattern": {
-            "type": "string",
-            "default": ".*\\.md$",
-            "description": "Regex pattern for filename matching"
-        },
-        "metadata_filters": {
-            "type": "object",
-            "additionalProperties": {
-                "type": "string",
-                "description": "Regex pattern for metadata value matching"
-            },
-            "description": "Key-value pairs for metadata filtering"
-        },
-        "fulltext_regex": {
-            "type": "string",
-            "description": "Regex pattern for fulltext search"
-        },
-        "max_results": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100,
-            "default": 10
-        }
-    },
-    "required": [],
-    "additionalProperties": False
-}
+    return results
