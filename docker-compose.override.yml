@@ -6,3 +6,4 @@ services:
 
       # Песочница агента (единственная RW зона для кэша и памяти)
       - "./data:/app/data:rw"
+      - ./src:/app/src:ro
