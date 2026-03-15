@@ -1,0 +1,26 @@
+{
+  "name": "search_vault",
+  "description": "Инструмент для безопасного чтения базы знаний (Vault). Выполняет поиск по YAML-тегам и тексту.",
+  "command": "python3 /app/bundled-skills/search_vault/search_vault.py",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "text": {
+        "type": "string",
+        "description": "Строка для полнотекстового поиска внутри файлов. Используй для поиска конкретных терминов, концепций или фраз."
+      },
+      "metadata": {
+        "type": "object",
+        "description": "Словарь для точной фильтрации по YAML-метаданным. Поддерживаемые ключи: 'tags' (массив), 'domain', 'project'.",
+        "properties": {
+          "tags": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "domain": { "type": "string" },
+          "project": { "type": "string" }
+        }
+      }
+    }
+  }
+}
