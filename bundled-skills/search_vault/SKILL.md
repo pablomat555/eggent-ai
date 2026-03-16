@@ -1,14 +1,17 @@
+---
+name: search_vault
+description: Безопасный прожектор-поиск по Obsidian Vault. Читает только YAML-фронтматтер + захватывает ±1000 символов контекста. Поддерживает фильтры domain, project, tags.
+allowed-tools: Bash(python3 /app/bundled-skills/search_vault/search_vault.py)
+---
+
 # search_vault
 
-**Описание:**  
-Безопасный прожектор-поиск по Obsidian Vault. Читает только YAML-фронтматтер + захватывает ±1000 символов контекста вокруг совпадения.
+**Назначение**  
+Инструмент для Second Brain Agent. Ищет заметки по тегам, project, domain и тексту без галлюцинаций.
 
-**Command:**  
-`python3 /app/bundled-skills/search_vault/search_vault.py`
+**Параметры**  
+- `text` — строка для поиска  
+- `metadata` — объект `{ "domain": "dev", "project": "Second Brain", "tags": ["system"] }`
 
-**Параметры (JSON):**  
-- `text` (string) — полнотекстовый поиск  
-- `metadata` (object) — фильтры: `{ "domain": "dev", "project": "Second Brain", "tags": ["system"] }`
-
-**Как использовать:**  
-Автоматически вызывается Библиотекарем при запросах "найди заметки domain: dev" или "поиск по тегу #intelligence-os".
+**Как используется**  
+Автоматически вызывается Библиотекарем при запросах "найди заметки domain: dev".
