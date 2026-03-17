@@ -20,7 +20,9 @@ ENV PATH="${PYTHON_VENV}/bin:${PATH}"
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 ENV PIP_NO_CACHE_DIR=1
 ENV TMPDIR=/app/data/tmp
-ENV PLAYWRIGHT_BROWSERS_PATH=/app/data/ms-playwright
+
+# 1. ВЫНОСИМ КЭШ БРАУЗЕРОВ ИЗ VOLUME В ИЗОЛИРОВАННУЮ ПАПКУ
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 ENV npm_config_cache=/app/data/npm-cache
 ENV XDG_CACHE_HOME=/app/data/.cache
 
@@ -69,11 +71,15 @@ COPY --from=builder /app/next.config.mjs ./next.config.mjs
 COPY --from=builder /app/bundled-skills ./bundled-skills
 COPY --from=builder /app/scripts/docker-entrypoint.sh ./scripts/docker-entrypoint.sh
 
-RUN mkdir -p /app/data/tmp /app/data/ms-playwright /app/data/npm-cache /app/data/.cache \
-  && chmod +x /app/scripts/docker-entrypoint.sh \
-  && chown -R node:node /app "${PYTHON_VENV}"
+# 2. РАЗДАЕМ ПРАВА НА ПАПКУ БРАУЗЕРА ПОЛЬЗОВАТЕЛЮ NODE
+RUN chmod +x /app/scripts/docker-entrypoint.sh \
+  && chown -R node:node /app "${PYTHON_VENV}" /opt/ms-playwright
 
 USER node
+
+# 3. УСТАНАВЛИВАЕМ CHROMIUM ПРЯМО В ОБРАЗ ПРИ СБОРКЕ
+RUN npx playwright install chromium
+
 EXPOSE 3000
 
 CMD ["/app/scripts/docker-entrypoint.sh"]
