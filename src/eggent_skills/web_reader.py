@@ -1,10 +1,8 @@
 import argparse
 import sys
 import os
-import json
 import requests
 from loguru import logger
-from typing import Any
 
 logger.remove()
 logger.add(sys.stderr, level="INFO")
@@ -21,33 +19,60 @@ def fetch_markdown(url: str) -> str | None:
         "urls": [url],
         "bypass_cache": True,
         "extract_blocks": True,
-        "word_count_threshold": 10
+        "word_count_threshold": 10,
     }
 
     try:
         logger.info(f"Requesting Crawl4AI: {url}")
-        response = requests.post(CRAWL4AI_ENDPOINT, json=payload, headers=headers, timeout=60)
+        response = requests.post(
+            CRAWL4AI_ENDPOINT,
+            json=payload,
+            headers=headers,
+            timeout=60,
+        )
+
+        logger.info(f"Status code: {response.status_code}")
+        logger.info(f"Response text: {response.text[:3000]}")
+
         response.raise_for_status()
         data = response.json()
 
-        # Защита от любых изменений структуры API
-        result_obj = {}
-        if "results" in data and isinstance(data["results"], list) and len(data["results"]) > 0:
-            result_obj = data["results"][0]
-        elif isinstance(data, dict):
-            result_obj = data
+        # Основной ожидаемый формат
+        results = data.get("results")
+        if isinstance(results, list) and results:
+            result_obj = results[0]
 
-        md_data = result_obj.get("markdown", "")
+            # если API отдает success/error_message
+            if result_obj.get("success") is False:
+                logger.error(f"Crawl failed: {result_obj.get('error_message')}")
+                return None
 
-        # Если API вернуло словарь (Crawl4AI v0.8.0+)
-        if isinstance(md_data, dict):
-            # Берем очищенный Markdown, если его нет — берем сырой
-            return md_data.get("fit_markdown", md_data.get("raw", json.dumps(md_data)))
-        
-        return str(md_data)
+            markdown_obj = result_obj.get("markdown")
 
+            if isinstance(markdown_obj, dict):
+                fit_md = markdown_obj.get("fit_markdown", "")
+                raw_md = markdown_obj.get("raw_markdown", "")
+                final_md = fit_md or raw_md
+                if final_md and str(final_md).strip():
+                    return str(final_md)
+
+            elif isinstance(markdown_obj, str) and markdown_obj.strip():
+                return markdown_obj.strip()
+
+        logger.error(f"Unexpected API response format: {data}")
+        return None
+
+    except requests.Timeout:
+        logger.error("Crawl API timeout")
+        return None
+    except requests.RequestException as e:
+        logger.error(f"HTTP error: {e}")
+        return None
+    except ValueError as e:
+        logger.error(f"JSON decode error: {e}")
+        return None
     except Exception as e:
-        logger.error(f"Crawl API Error: {e}")
+        logger.error(f"Unexpected Crawl API error: {e}")
         return None
 
 def main() -> None:
@@ -57,14 +82,13 @@ def main() -> None:
 
     markdown_result = fetch_markdown(args.url)
 
-    # Принудительно конвертируем в строку перед strip()
-    if markdown_result and str(markdown_result).strip():
-        print(str(markdown_result).strip())
+    if markdown_result and markdown_result.strip():
+        print(markdown_result.strip())
         sys.exit(0)
-    else:
-        logger.error(f"Failed to extract content from: {args.url}")
-        print(f"Error: Content could not be extracted from {args.url}")
-        sys.exit(1)
+
+    logger.error(f"Failed to extract content from: {args.url}")
+    print(f"Error: Content could not be extracted from {args.url}")
+    sys.exit(1)
 
 if __name__ == "__main__":
     main()
