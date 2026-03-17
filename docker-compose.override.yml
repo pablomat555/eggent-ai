@@ -1,9 +1,15 @@
 services:
   app:
+    networks:
+      - default
+      - voice-assistant_voice_net
     volumes:
       # База знаний монтируется СТРОГО как RO (Read-Only)
       - /var/syncthing/vault:/app/vault:ro
-
       # Песочница агента (единственная RW зона для кэша и памяти)
       - "./data:/app/data:rw"
       - ./src:/app/src:ro
+
+networks:
+  voice-assistant_voice_net:
+    external: true
