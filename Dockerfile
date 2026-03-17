@@ -21,13 +21,12 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 ENV PIP_NO_CACHE_DIR=1
 ENV TMPDIR=/app/data/tmp
 
-# 1. ВЫНОСИМ КЭШ БРАУЗЕРОВ ИЗ VOLUME В ИЗОЛИРОВАННУЮ ПАПКУ
-ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 ENV npm_config_cache=/app/data/npm-cache
 ENV XDG_CACHE_HOME=/app/data/.cache
 
-RUN mkdir -p "${TMPDIR}" "${PLAYWRIGHT_BROWSERS_PATH}" "${npm_config_cache}" "${XDG_CACHE_HOME}"
+RUN mkdir -p "${TMPDIR}" "${npm_config_cache}" "${XDG_CACHE_HOME}"
 
+# Устанавливаем базовые утилиты и Python, очистив от тяжелых зависимостей Playwright
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     bash \
@@ -35,29 +34,12 @@ RUN apt-get update \
     curl \
     git \
     jq \
-    libasound2 \
-    libatk1.0-0 \
-    libatspi2.0-0 \
-    libdbus-1-3 \
-    libgbm1 \
-    libglib2.0-0 \
-    libnspr4 \
-    libnss3 \
-    libx11-6 \
-    libxcb1 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxext6 \
-    libxfixes3 \
-    libxkbcommon0 \
-    libxrandr2 \
     python3 \
-    python3-requests \
     python3-venv \
     sudo \
     ripgrep \
   && python3 -m venv --system-site-packages "${PYTHON_VENV}" \
-  && "${PYTHON_VENV}/bin/python3" -m pip --version \
+  && "${PYTHON_VENV}/bin/pip" install --no-cache-dir loguru requests \
   && rm -rf /var/lib/apt/lists/*
 
 RUN echo "node ALL=(root) NOPASSWD: ALL" > /etc/sudoers.d/eggent-node \
@@ -70,13 +52,13 @@ COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/next.config.mjs ./next.config.mjs
 COPY --from=builder /app/bundled-skills ./bundled-skills
 COPY --from=builder /app/scripts/docker-entrypoint.sh ./scripts/docker-entrypoint.sh
+# ОБЯЗАТЕЛЬНО: копируем Python-скрипты агента в продакшен-образ
+COPY --from=builder /app/src/eggent_skills /app/src/eggent_skills
 
-# 2. РАЗДАЕМ ПРАВА НА ПАПКУ БРАУЗЕРА ПОЛЬЗОВАТЕЛЮ NODE
 RUN chmod +x /app/scripts/docker-entrypoint.sh \
-  && chown -R node:node /app "${PYTHON_VENV}" /opt/ms-playwright
+  && chown -R node:node /app "${PYTHON_VENV}"
 
 USER node
-
 
 EXPOSE 3000
 
