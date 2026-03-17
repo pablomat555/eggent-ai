@@ -43,7 +43,7 @@ services:
     container_name: crawl4ai
     restart: unless-stopped
     ports:
-      - "11225:11225"
+      - "11235:11235" # <--- Изменить здесь
     shm_size: '1gb'
     networks:
       - voice-assistant_voice_net
