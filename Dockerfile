@@ -78,7 +78,7 @@ RUN chmod +x /app/scripts/docker-entrypoint.sh \
 USER node
 
 # 3. УСТАНАВЛИВАЕМ CHROMIUM ПРЯМО В ОБРАЗ ПРИ СБОРКЕ
-RUN npx playwright install chromium
+RUN npx playwright install --with-deps chromium
 
 EXPOSE 3000
 
