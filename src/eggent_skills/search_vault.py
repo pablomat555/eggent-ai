@@ -3,82 +3,119 @@ from pathlib import Path
 from typing import Any
 from loguru import logger
 
-def _extract_snippet(content: str, keywords: list[str], context_window: int = 100) -> str:
-    """Extracts a context snippet around the first found keyword."""
-    content_clean = re.sub(r'\s+', ' ', content)
-    content_lower = content_clean.lower()
-    
-    for word in keywords:
-        idx = content_lower.find(word)
-        if idx != -1:
-            start = max(0, idx - context_window)
-            end = min(len(content_clean), idx + len(word) + context_window)
-            return f"...{content_clean[start:end].strip()}..."
-    return "No exact snippet matched."
-
 def _parse_tags(content: str) -> list[str]:
-    """Extracts tags from Obsidian YAML frontmatter."""
+    """Строгий парсинг тегов только из блока 'tags:' в YAML frontmatter."""
     tags = []
-    if content.startswith("---"):
-        yaml_block = content.split("---", 2)
-        if len(yaml_block) >= 3:
-            # Match tags array or inline tags
-            tag_matches = re.findall(r'-\s*([^\n]+)', yaml_block[1])
-            tags = [t.strip() for t in tag_matches if t.strip()]
+    yaml_match = re.match(r'^---\n(.*?)\n---', content, re.DOTALL)
+    if not yaml_match:
+        return tags
+    
+    yaml_content = yaml_match.group(1)
+    # Ищем блок tags: и захватываем все элементы списка под ним
+    tags_match = re.search(r'^tags:\n((?:\s+- .*\n?)*)', yaml_content, re.MULTILINE)
+    
+    if tags_match:
+        tag_lines = tags_match.group(1).split('\n')
+        for line in tag_lines:
+            line = line.strip()
+            if line.startswith('-'):
+                tags.append(line[1:].strip())
     return tags
 
-def execute_search(vault_dir: str | Path, query: str, tags: list[str] | None = None) -> list[dict[str, Any]]:
+def _extract_best_snippet(paragraphs: list[str], keywords: list[str]) -> str:
+    """Умное извлечение сниппетов (уровень абзаца, приоритет заголовков h2/h3)."""
+    candidates = []
+    
+    for para in paragraphs:
+        para_lower = para.lower()
+        matches = sum(para_lower.count(kw) for kw in keywords)
+        
+        if matches > 0:
+            is_heading = bool(re.match(r'^#{2,3}\s', para.strip()))
+            candidates.append((is_heading, matches, para.strip()))
+            
+    if not candidates:
+        return "Сниппет не найден, но ключевые слова присутствуют."
+        
+    # Сортируем: сначала h2/h3 с совпадениями, затем по количеству совпадений
+    candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    best_snippet = candidates[0][2]
+    
+    # Лимит на размер сниппета для экономии токенов
+    if len(best_snippet) > 600:
+        return best_snippet[:600] + "..."
+    return best_snippet
+
+def execute_search(vault_dir: str | Path, query: str) -> str | list[dict[str, Any]]:
     """
-    Searches the Obsidian vault. Features AND logic, case-insensitive matching, 
-    snippet extraction, and graceful fallback if tag filtering yields 0 results.
+    Детерминированный RAG-движок со скорингом и хард-лимитами.
+    Возвращает NO_RESULTS, если ничего не найдено.
     """
     vault_path = Path(vault_dir)
     if not vault_path.exists() or not vault_path.is_dir():
         logger.error(f"Vault path not found: {vault_path}")
-        return [{"error": "Vault path does not exist."}]
+        return "NO_RESULTS"
 
-    try:
-        keywords = [word.lower() for word in query.split() if word.strip()]
-        all_md_files = list(vault_path.rglob("*.md"))
-        
-        def _search_pass(filter_tags: list[str] | None) -> list[dict[str, Any]]:
-            results = []
-            for file_path in all_md_files:
-                try:
-                    content = file_path.read_text(encoding="utf-8")
-                    content_lower = content.lower()
+    # Атомарный запрос: убираем лишние пробелы, переводим в нижний регистр
+    keywords = [word.lower() for word in query.split() if word.strip()]
+    if not keywords:
+        return "NO_RESULTS"
+
+    all_md_files = list(vault_path.rglob("*.md"))
+    results = []
+
+    for file_path in all_md_files:
+        try:
+            content = file_path.read_text(encoding="utf-8")
+            content_lower = content.lower()
+            
+            # Фильтр: все слова из запроса должны быть в файле
+            if not all(kw in content_lower for kw in keywords):
+                continue
+                
+            score = 0
+            filename_lower = file_path.stem.lower()
+            first_200 = content_lower[:200]
+            
+            # +5 если keyword в заголовке файла
+            for kw in keywords:
+                if kw in filename_lower:
+                    score += 5
                     
-                    # 1. Check Keywords (AND logic)
-                    if not all(kw in content_lower for kw in keywords):
-                        continue
-                        
-                    # 2. Check Tags (if provided)
-                    if filter_tags:
-                        file_tags = _parse_tags(content)
-                        if not any(t in file_tags for t in filter_tags):
-                            continue
-                            
-                    # 3. Assemble Result
-                    results.append({
-                        "file": file_path.name,
-                        "path": str(file_path),
-                        "snippet": _extract_snippet(content, keywords),
-                        "tags": _parse_tags(content)
-                    })
-                except Exception as e:
-                    logger.warning(f"Could not read {file_path.name}: {e}")
-            return results
+            # +2 если в первых 200 символах
+            for kw in keywords:
+                if kw in first_200:
+                    score += 2
+            
+            paragraphs = content.split('\n\n')
+            
+            for para in paragraphs:
+                para_lower = para.lower()
+                matches = sum(para_lower.count(kw) for kw in keywords)
+                if matches > 0:
+                    # +1 за каждое совпадение
+                    score += matches 
+                    
+                    # +3 если keyword в заголовке внутри файла
+                    if re.match(r'^#{1,6}\s', para.strip()):
+                        for kw in keywords:
+                            if kw in para_lower:
+                                score += 3
 
-        # First Pass: Strict search with tags
-        matched_results = _search_pass(tags)
-        
-        # Failsafe: If 0 results and tags were used, drop tags and retry
-        if not matched_results and tags:
-            logger.info("0 results with tags. Dropping tag filter for broader search.")
-            matched_results = _search_pass(None)
+            if score > 0:
+                results.append({
+                    "file": file_path.name,
+                    "score": score,
+                    "tags": _parse_tags(content),
+                    "snippet": _extract_best_snippet(paragraphs, keywords)
+                })
+                
+        except Exception as e:
+            logger.warning(f"Ошибка чтения {file_path.name}: {e}")
 
-        return matched_results[:10]  # Limit payload size
+    if not results:
+        return "NO_RESULTS"
 
-    except Exception as e:
-        logger.exception("Search execution failed.")
-        return [{"error": str(e)}]
+    # Сортировка по score (убывание) и срез top_k = 3
+    results.sort(key=lambda x: x["score"], reverse=True)
+    return results[:3]
