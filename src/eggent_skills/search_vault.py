@@ -149,7 +149,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Deterministic Obsidian RAG Search")
     parser.add_argument("--query", required=True, help="Текст для поиска (атомарный запрос)")
     # ВНИМАНИЕ: Укажи путь к КОРНЮ базы, а не только к папке inbox
-    parser.add_argument("--dir", default="/var/syncthing/vault", help="Путь к корню базы знаний")
+    parser.add_argument("--dir", default="/app/vault", help="Путь к корню базы знаний внутри контейнера")
     args = parser.parse_args()
 
     result = execute_search(args.dir, args.query)
