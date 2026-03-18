@@ -1,80 +1,84 @@
-import os
 import re
-import json
-import argparse
-import sys
+from pathlib import Path
+from typing import Any
+from loguru import logger
 
-# Важно: укажи здесь правильный путь к твоему Vault внутри контейнера!
-# Согласно архитектуре, это либо /var/syncthing/oo-system, либо /app/core
-VAULT_DIR = "/app/vault"
+def _extract_snippet(content: str, keywords: list[str], context_window: int = 100) -> str:
+    """Extracts a context snippet around the first found keyword."""
+    content_clean = re.sub(r'\s+', ' ', content)
+    content_lower = content_clean.lower()
+    
+    for word in keywords:
+        idx = content_lower.find(word)
+        if idx != -1:
+            start = max(0, idx - context_window)
+            end = min(len(content_clean), idx + len(word) + context_window)
+            return f"...{content_clean[start:end].strip()}..."
+    return "No exact snippet matched."
 
-def search_vault(search_text, search_tags):
-    if not os.path.exists(VAULT_DIR):
-        print(f"Ошибка: Директория Vault '{VAULT_DIR}' не найдена внутри контейнера. Проверьте Volumes в docker-compose.")
-        sys.exit(1)
+def _parse_tags(content: str) -> list[str]:
+    """Extracts tags from Obsidian YAML frontmatter."""
+    tags = []
+    if content.startswith("---"):
+        yaml_block = content.split("---", 2)
+        if len(yaml_block) >= 3:
+            # Match tags array or inline tags
+            tag_matches = re.findall(r'-\s*([^\n]+)', yaml_block[1])
+            tags = [t.strip() for t in tag_matches if t.strip()]
+    return tags
 
-    results = []
-    yaml_pattern = re.compile(r'^---\n(.*?)\n---', re.DOTALL)
-
-    for root, dirs, files in os.walk(VAULT_DIR):
-        # Жесткая блокировка скрытых папок (.stversions, .git, .obsidian)
-        dirs[:] = [d for d in dirs if not d.startswith('.')]
-
-        for file in files:
-            if not file.endswith('.md'):
-                continue
-
-            filepath = os.path.join(root, file)
-            try:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    content = f.read()
-
-                match = yaml_pattern.search(content)
-                yaml_text = match.group(1) if match else ""
-
-                hit = False
-                # Ищем по тексту
-                if search_text and search_text.lower() in content.lower():
-                    hit = True
-                
-                # Ищем по тегам (во фронтматтере и в тексте)
-                if search_tags:
-                    for tag in search_tags:
-                        clean_tag = tag.replace("#", "").lower()
-                        if clean_tag in yaml_text.lower() or f"#{clean_tag}" in content.lower():
-                            hit = True
-
-                if hit:
-                    # Отдаем агенту имя файла и небольшой кусок контекста
-                    snippet = content[:200].replace('\n', ' ') + "..."
-                    results.append(f"Файл: {file} | Контекст: {snippet}")
-                    
-                    # Защита от переполнения контекста ИИ (лимит 10 заметок)
-                    if len(results) >= 10:
-                        return results
-
-            except Exception:
-                continue # Игнорируем битые файлы
-
-    return results
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--text", default="")
-    parser.add_argument("--metadata", default="{}")
-    args = parser.parse_args()
+def execute_search(vault_dir: str | Path, query: str, tags: list[str] | None = None) -> list[dict[str, Any]]:
+    """
+    Searches the Obsidian vault. Features AND logic, case-insensitive matching, 
+    snippet extraction, and graceful fallback if tag filtering yields 0 results.
+    """
+    vault_path = Path(vault_dir)
+    if not vault_path.exists() or not vault_path.is_dir():
+        logger.error(f"Vault path not found: {vault_path}")
+        return [{"error": "Vault path does not exist."}]
 
     try:
-        meta = json.loads(args.metadata)
-        tags = meta.get("tags", [])
-    except:
-        tags = []
+        keywords = [word.lower() for word in query.split() if word.strip()]
+        all_md_files = list(vault_path.rglob("*.md"))
+        
+        def _search_pass(filter_tags: list[str] | None) -> list[dict[str, Any]]:
+            results = []
+            for file_path in all_md_files:
+                try:
+                    content = file_path.read_text(encoding="utf-8")
+                    content_lower = content.lower()
+                    
+                    # 1. Check Keywords (AND logic)
+                    if not all(kw in content_lower for kw in keywords):
+                        continue
+                        
+                    # 2. Check Tags (if provided)
+                    if filter_tags:
+                        file_tags = _parse_tags(content)
+                        if not any(t in file_tags for t in filter_tags):
+                            continue
+                            
+                    # 3. Assemble Result
+                    results.append({
+                        "file": file_path.name,
+                        "path": str(file_path),
+                        "snippet": _extract_snippet(content, keywords),
+                        "tags": _parse_tags(content)
+                    })
+                except Exception as e:
+                    logger.warning(f"Could not read {file_path.name}: {e}")
+            return results
 
-    found = search_vault(args.text, tags)
-    
-    if found:
-        print("✅ НАЙДЕНЫ ЗАМЕТКИ:")
-        for f in found:
-            print(f"- {f}")
-    else:
-        print("❌ Заметки не найдены. База пуста по этому запросу.")
+        # First Pass: Strict search with tags
+        matched_results = _search_pass(tags)
+        
+        # Failsafe: If 0 results and tags were used, drop tags and retry
+        if not matched_results and tags:
+            logger.info("0 results with tags. Dropping tag filter for broader search.")
+            matched_results = _search_pass(None)
+
+        return matched_results[:10]  # Limit payload size
+
+    except Exception as e:
+        logger.exception("Search execution failed.")
+        return [{"error": str(e)}]
