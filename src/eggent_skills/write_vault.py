@@ -3,7 +3,19 @@ import sys
 import json
 import requests
 import argparse
+import re
 from datetime import datetime
+
+DOMAIN_WHITELIST = {"ai", "trading", "finance", "dev", "english", "obsidian", "automation"}
+TYPE_WHITELIST = {"system", "note", "project", "article", "reference", "meeting", "person", "log", "inbox"}
+
+def classify_unprefixed_tag(tag: str) -> str:
+    """Классифицирует тег без префикса по вайтлистам."""
+    if tag in TYPE_WHITELIST:
+        return f"type/{tag}"
+    if tag in DOMAIN_WHITELIST:
+        return f"domain/{tag}"
+    return f"entity/{tag}"
 
 def normalize_zero_links(items: list[str]) -> list[str]:
     result = []
@@ -21,15 +33,34 @@ def normalize_zero_links(items: list[str]) -> list[str]:
     return result
 
 def normalize_tags(tags: list[str]) -> list[str]:
-    clean_tags = [t.strip() for t in tags if isinstance(t, str) and t.strip()]
-    result = []
+    """Нормализация тегов: lowercase, trim, dedupe, prefixing."""
     seen = set()
-    for t in clean_tags:
-        if t not in seen:
-            seen.add(t)
-            result.append(t)
-    if "inbox" not in seen:
-        result.insert(0, "inbox")
+    result = []
+
+    for raw_tag in tags:
+        if not isinstance(raw_tag, str):
+            continue
+
+        t = raw_tag.strip().lower()
+        if not t:
+            continue
+
+        # Убираем лишние пробелы вокруг слеша, если они есть (например " entity/ Eggent ")
+        t = re.sub(r'\s*/\s*', '/', t)
+
+        if t.startswith(("domain/", "entity/", "type/")):
+            normalized = t
+        else:
+            normalized = classify_unprefixed_tag(t)
+
+        if normalized not in seen:
+            seen.add(normalized)
+            result.append(normalized)
+
+    # Гарантируем наличие тега type/inbox (или inbox, если нужна 100% обратная совместимость со старым форматом)
+    if "type/inbox" not in seen and "inbox" not in seen:
+        result.insert(0, "type/inbox")
+
     return result
 
 def build_final_markdown(title: str, content: str, zero_links: list[str], source_url: str, tags: list[str]) -> str:
