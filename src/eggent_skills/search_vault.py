@@ -1,11 +1,9 @@
 import re
 import json
 import argparse
+import sys
 from pathlib import Path
 from typing import Any
-
-# Отключаем логгер для чистого stdout JSON-контракта, пишем ошибки в stderr
-import sys
 
 STOP_WORDS = {
     "что", "как", "где", "когда", "зачем", "почему", "какие", "какой", "какая",
@@ -15,8 +13,21 @@ STOP_WORDS = {
     "of", "with", "by", "about", "what", "how", "why", "where", "when", "which"
 }
 
+IGNORED_DIRS = {".stversions", ".obsidian", ".git", "__pycache__", ".trash"}
+
+def should_skip_path(path: Path) -> bool:
+    """Жесткая фильтрация системных и скрытых директорий."""
+    parts = set(path.parts)
+    if parts.intersection(IGNORED_DIRS):
+        return True
+    return any(part.startswith('.') and part != '.' for part in path.parts)
+
+def is_backup_file(filename: str) -> bool:
+    """Отсечение versioned copies (например Syncthing: name~20260314-184802.md)."""
+    return bool(re.search(r'~\d{8}-\d{6}', filename) or "sync-conflict" in filename.lower())
+
 def _parse_tags(content: str) -> list[str]:
-    """Строгий парсинг тегов только из блока 'tags:' в YAML frontmatter."""
+    """Строгий парсинг тегов из YAML frontmatter."""
     tags = []
     yaml_match = re.match(r'^---\n(.*?)\n---', content, re.DOTALL)
     if not yaml_match:
@@ -26,20 +37,22 @@ def _parse_tags(content: str) -> list[str]:
     tags_match = re.search(r'^tags:\n((?:\s+- .*\n?)*)', yaml_content, re.MULTILINE)
     
     if tags_match:
-        tag_lines = tags_match.group(1).split('\n')
-        for line in tag_lines:
+        for line in tags_match.group(1).split('\n'):
             line = line.strip()
             if line.startswith('-'):
-                # Убираем кавычки, если они есть
                 clean_tag = line[1:].strip().strip('"').strip("'")
                 if clean_tag:
                     tags.append(clean_tag)
     return tags
 
+def _extract_h1(content: str) -> str:
+    """Извлечение заголовка H1 для fallback-эвристики."""
+    match = re.search(r'^#\s+(.+)$', content, re.MULTILINE)
+    return match.group(1).strip() if match else ""
+
 def _extract_best_snippet(paragraphs: list[str], keywords: list[str]) -> str:
-    """Извлечение сниппета: захватывает лучший абзац + следующий, если контекст короткий."""
+    """Извлечение наиболее релевантного абзаца."""
     candidates = []
-    
     for i, para in enumerate(paragraphs):
         para_lower = para.lower()
         matches = sum(para_lower.count(kw) for kw in keywords)
@@ -53,26 +66,24 @@ def _extract_best_snippet(paragraphs: list[str], keywords: list[str]) -> str:
         
     candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
     best_para_index = candidates[0][3]
-    
     best_snippet = paragraphs[best_para_index].strip()
     
     if len(best_snippet) < 200 and best_para_index + 1 < len(paragraphs):
         next_para = paragraphs[best_para_index + 1].strip()
-        if next_para:
+        if next_para and not re.match(r'^---', next_para):
             best_snippet += "\n\n" + next_para
             
-    if len(best_snippet) > 800:
-        return best_snippet[:800] + "..."
-    return best_snippet
+    return best_snippet[:800] + "..." if len(best_snippet) > 800 else best_snippet
 
 def _score_and_extract(file_path: Path, content: str, keywords: list[str], candidate_entities: list[str]) -> dict | None:
-    """Гибридный скоринг с Entity layer и подавлением системного шума."""
+    """Гибридный скоринг с fallback на H1/Filename для старых заметок."""
     content_lower = content.lower()
     filename_lower = file_path.stem.lower()
     first_200 = content_lower[:200]
     
     raw_tags = _parse_tags(content)
     norm_tags = [t.lower() for t in raw_tags]
+    h1_title = _extract_h1(content).lower()
     
     base_score = 0
     entity_score = 0
@@ -96,23 +107,37 @@ def _score_and_extract(file_path: Path, content: str, keywords: list[str], candi
                     if kw in para_lower:
                         base_score += 3
 
-    # --- 2. Entity Layer ---
-    for ent in candidate_entities:
-        if ent in norm_tags:
+    # --- 2. Entity Layer (С поддержкой Fallback для заметок без тегов) ---
+    for ent_full in candidate_entities:
+        kw = ent_full.split('/', 1)[1]
+        is_entity_matched = False
+
+        # Точный тег (высший приоритет)
+        if ent_full in norm_tags:
             entity_score += 8
-            entity_matches.append(ent)
+            is_entity_matched = True
             
-        bare_ent = ent.replace("entity/", "")
-        if bare_ent in filename_lower:
+        # Fallback: поиск в H1
+        if h1_title and kw in h1_title:
+            entity_score += 5
+            is_entity_matched = True
+            
+        # Fallback: поиск в имени файла
+        if kw in filename_lower:
             entity_score += 4
+            is_entity_matched = True
             
+        # Fallback: явное упоминание сущности в других заголовках
         for para in paragraphs:
-            if re.match(r'^#{1,6}\s', para.strip()) and bare_ent in para.lower():
+            if re.match(r'^#{2,6}\s', para.strip()) and kw in para.lower():
                 entity_score += 3
+                is_entity_matched = True
+
+        if is_entity_matched:
+            entity_matches.append(ent_full)
 
     # --- 3. Anti-Noise Layer ---
     is_direct_target = (entity_score > 0) or all(kw in filename_lower for kw in keywords)
-    
     is_system_file = "type/system" in norm_tags or "system" in norm_tags
     looks_like_prompt = "prompt" in filename_lower or "instruction" in filename_lower or "система" in filename_lower
     
@@ -125,7 +150,6 @@ def _score_and_extract(file_path: Path, content: str, keywords: list[str], candi
 
     total_score = base_score + entity_score + system_penalty
 
-    # Отдаем документ, если у него есть хотя бы минимальный вес или он является целью
     if total_score > 0 or is_direct_target:
         return {
             "title": file_path.stem,
@@ -145,18 +169,21 @@ def execute_search(vault_dir: str | Path, query: str) -> dict[str, Any]:
         print(f"Vault path not found: {vault_path}", file=sys.stderr)
         return {"status": "error", "error_message": "Vault path does not exist", "results": []}
 
-    # Подготовка сигналов запроса
     keywords = [word.lower() for word in query.split() if word.strip() and word.lower() not in STOP_WORDS]
     if not keywords:
         return {"status": "no_results", "message": "Query contains only stop-words or is empty", "results": []}
         
     candidate_entities = [f"entity/{kw}" for kw in keywords]
 
-    all_md_files = list(vault_path.rglob("*.md"))
+    # Фильтрация на этапе обхода дерева
+    valid_md_files = [
+        p for p in vault_path.rglob("*.md")
+        if not should_skip_path(p) and not is_backup_file(p.name)
+    ]
     
     def search_pass(mode: str) -> list[dict]:
         pass_results = []
-        for file_path in all_md_files:
+        for file_path in valid_md_files:
             try:
                 content = file_path.read_text(encoding="utf-8")
                 content_lower = content.lower()
@@ -164,40 +191,47 @@ def execute_search(vault_dir: str | Path, query: str) -> dict[str, Any]:
                 if mode == "AND":
                     if not all(kw in content_lower for kw in keywords):
                         continue
-                else: # OR
+                else:
                     if not any(kw in content_lower for kw in keywords):
                         continue
                         
                 res = _score_and_extract(file_path, content, keywords, candidate_entities)
                 if res:
                     pass_results.append(res)
-            except Exception as e:
-                pass # Silent fail для нечитаемых файлов, чтобы не ломать JSON stdout
+            except Exception:
+                pass
         return pass_results
 
-    # Шаг 1: Строгий AND-поиск
     results = search_pass("AND")
-    
-    # Шаг 2: Fallback на OR-поиск
     if not results and len(keywords) > 1:
         results = search_pass("OR")
 
     if not results:
         return {"status": "no_results", "results": []}
 
-    # Шаг 3: Deterministic Sorting 
-    # Сортировка по убыванию score, затем по алфавиту для стабильного тай-брейкера
-    results.sort(key=lambda x: (-x["entity_score"], -x["score"], x["file"], x["path"]))
+    # Дедупликация по canonical title (на случай если versioned files как-то проскочили)
+    seen_titles = set()
+    unique_results = []
     
-    return {"status": "ok", "results": results[:3]}
+    # Предварительная сортировка для дедупликации (чтобы брать лучший вариант)
+    results.sort(key=lambda x: (-x["entity_score"], -x["score"]))
+    
+    for res in results:
+        canonical_title = re.sub(r'~\d{8}-\d{6}', '', res["title"]).strip().lower()
+        if canonical_title not in seen_titles:
+            seen_titles.add(canonical_title)
+            unique_results.append(res)
+
+    # Финальная детерминированная сортировка
+    unique_results.sort(key=lambda x: (-x["entity_score"], -x["score"], x["file"], x["path"]))
+    
+    return {"status": "ok", "results": unique_results[:3]}
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Deterministic Obsidian RAG Search")
-    parser.add_argument("--query", required=True, help="Текст для поиска (атомарный запрос)")
+    parser.add_argument("--query", required=True, help="Текст для поиска")
     parser.add_argument("--dir", default="/app/vault", help="Путь к корню базы знаний внутри контейнера")
     args = parser.parse_args()
 
     result = execute_search(args.dir, args.query)
-    
-    # Строгий вывод в stdout для агента
     print(json.dumps(result, ensure_ascii=False, indent=2))
