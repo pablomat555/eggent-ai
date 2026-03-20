@@ -35,40 +35,53 @@ def normalize_zero_links(items: list[str]) -> list[str]:
     return result
 
 def normalize_tags(tags: list[str], is_new_inbox: bool = False) -> list[str]:
-    """
-    Нормализация тегов: lowercase, trim, dedupe, prefixing.
-    is_new_inbox: Если True, гарантирует наличие тега type/inbox.
-    """
+    """Синхронизированная нормализация с migrate_corpus.py"""
     seen = set()
     result = []
 
-    for raw_tag in tags:
-        if not isinstance(raw_tag, str):
+    for original_tag in tags:
+        if not isinstance(original_tag, str):
             continue
 
-        t = raw_tag.strip().lower()
-        if not t:
+        clean_original = re.sub(r'\s*/\s*', '/', original_tag.strip())
+        t_lower = clean_original.lower()
+        if not t_lower:
             continue
 
-        # Убираем лишние пробелы вокруг слеша
-        t = re.sub(r'\s*/\s*', '/', t)
-
-        # Игнорируем теги-даты (например, 2026/mar)
-        if re.match(r'^\d{4}/[a-zа-я]+$', t):
-            normalized = t
-        elif t.startswith(("domain/", "entity/", "type/")):
-            normalized = t
+        # 1. Даты: YYYY/Mon
+        if re.match(r'^\d{4}/[a-zа-я]+$', t_lower):
+            parts = clean_original.split('/')
+            normalized = f"{parts[0]}/{parts[1].capitalize()}"
+            
+        # 2. Уже нормализованные
+        elif t_lower.startswith(("domain/", "entity/", "type/")):
+            normalized = t_lower
+            
+        # 3. Вложенные теги
+        elif "/" in t_lower:
+            prefix = t_lower.split('/')[0]
+            if prefix in DOMAIN_WHITELIST:
+                normalized = f"domain/{t_lower}"
+            elif prefix in TYPE_WHITELIST:
+                normalized = f"type/{t_lower}"
+            else:
+                normalized = t_lower # legacy/unresolved
+                
+        # 4. Простые теги
         else:
-            normalized = classify_unprefixed_tag(t)
+            if t_lower in TYPE_WHITELIST:
+                normalized = f"type/{t_lower}"
+            elif t_lower in DOMAIN_WHITELIST:
+                normalized = f"domain/{t_lower}"
+            else:
+                normalized = f"entity/{t_lower}"
 
         if normalized not in seen:
             seen.add(normalized)
             result.append(normalized)
 
-    # Гарантируем type/inbox ТОЛЬКО если это запрошено контрактом (is_new_inbox)
     if is_new_inbox and "type/inbox" not in seen and "inbox" not in seen:
         result.insert(0, "type/inbox")
-        seen.add("type/inbox")
 
     return result
 

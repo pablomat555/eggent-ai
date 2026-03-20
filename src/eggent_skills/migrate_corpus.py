@@ -89,7 +89,7 @@ def classify_unprefixed_tag(tag: str, stats: dict) -> str:
 
 
 def normalize_tags(raw_tags: list, stats: dict) -> tuple[list[str], bool]:
-    """Приводит теги к каноническому виду. Возвращает новые теги и флаг изменений."""
+    """Приводит теги к каноническому виду с учетом политик Phase 1."""
     if not raw_tags or not isinstance(raw_tags, list):
         return [], False
 
@@ -101,18 +101,46 @@ def normalize_tags(raw_tags: list, stats: dict) -> tuple[list[str], bool]:
         if not isinstance(original_tag, str):
             continue
 
-        t = original_tag.strip().lower()
-        if not t:
+        # Сохраняем оригинальный регистр для дат, чистим пробелы
+        clean_original = re.sub(r'\s*/\s*', '/', original_tag.strip())
+        t_lower = clean_original.lower()
+        if not t_lower:
             continue
 
-        t = re.sub(r'\s*/\s*', '/', t)
-
-        if re.match(r'^\d{4}/[a-zа-я]+$', t):
-            normalized = t
-        elif t.startswith(("domain/", "entity/", "type/")):
-            normalized = t
+        # 1. Special-case: Теги дат (гарантируем YYYY/Mon)
+        if re.match(r'^\d{4}/[a-zа-я]+$', t_lower):
+            parts = clean_original.split('/')
+            normalized = f"{parts[0]}/{parts[1].capitalize()}"
+            
+        # 2. Уже нормализованные теги
+        elif t_lower.startswith(("domain/", "entity/", "type/")):
+            normalized = t_lower
+            
+        # 3. Вложенные теги (nested tags)
+        elif "/" in t_lower:
+            prefix = t_lower.split('/')[0]
+            if prefix in DOMAIN_WHITELIST:
+                normalized = f"domain/{t_lower}"
+                stats["converted_to_domain"] += 1
+            elif prefix in TYPE_WHITELIST:
+                normalized = f"type/{t_lower}"
+                stats["converted_to_type"] += 1
+            else:
+                # Оставляем как legacy/unresolved без авто-конверсии в entity
+                normalized = t_lower 
+                stats["legacy_nested_tags"] += 1
+                
+        # 4. Простые теги (без слеша)
         else:
-            normalized = classify_unprefixed_tag(t, stats)
+            if t_lower in TYPE_WHITELIST:
+                normalized = f"type/{t_lower}"
+                stats["converted_to_type"] += 1
+            elif t_lower in DOMAIN_WHITELIST:
+                normalized = f"domain/{t_lower}"
+                stats["converted_to_domain"] += 1
+            else:
+                normalized = f"entity/{t_lower}"
+                stats["converted_to_entity"] += 1
 
         if normalized != original_tag:
             changed = True
@@ -259,7 +287,8 @@ def main() -> None:
         "excluded_transient": 0,
         "converted_to_entity": 0,
         "converted_to_domain": 0,
-        "converted_to_type": 0
+        "converted_to_type": 0,
+        "legacy_nested_tags": 0
     }
 
     print(f"Запуск Phase 1.2 Migration: {vault_path}")
@@ -290,6 +319,7 @@ def main() -> None:
     print(f"Converted to entity/*:  {stats['converted_to_entity']}")
     print(f"Converted to domain/*:  {stats['converted_to_domain']}")
     print(f"Converted to type/*:    {stats['converted_to_type']}")
+    print(f"Legacy nested tags:     {stats['legacy_nested_tags']}")
     print("="*45)
 
 
