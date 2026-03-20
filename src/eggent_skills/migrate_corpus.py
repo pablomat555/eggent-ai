@@ -50,11 +50,11 @@ def extract_frontmatter(content: str) -> tuple[str, str]:
     yaml_lines = []
     body_lines = []
     in_yaml = True
-    
+
     for i, line in enumerate(lines[1:], start=1):
         if in_yaml and line.startswith("---"):
             in_yaml = False
-            body_lines = lines[i+1:]
+            body_lines = lines[i + 1:]
             break
         elif in_yaml:
             yaml_lines.append(line)
@@ -111,25 +111,28 @@ def normalize_tags(raw_tags: list, stats: dict) -> tuple[list[str], bool]:
         if re.match(r'^\d{4}/[a-zа-я]+$', t_lower):
             parts = clean_original.split('/')
             normalized = f"{parts[0]}/{parts[1].capitalize()}"
-            
+
         # 2. Уже нормализованные теги
         elif t_lower.startswith(("domain/", "entity/", "type/")):
             normalized = t_lower
-            
+
         # 3. Вложенные теги (nested tags)
         elif "/" in t_lower:
-            prefix = t_lower.split('/')[0]
+            parts = t_lower.split('/', 1)
+            prefix = parts[0]
+            rest_slug = parts[1].replace('/', '-') if len(parts) > 1 else ""
+
             if prefix in DOMAIN_WHITELIST:
-                normalized = f"domain/{t_lower}"
+                normalized = f"domain/{prefix}-{rest_slug}"
                 stats["converted_to_domain"] += 1
             elif prefix in TYPE_WHITELIST:
-                normalized = f"type/{t_lower}"
+                normalized = f"type/{prefix}-{rest_slug}"
                 stats["converted_to_type"] += 1
             else:
                 # Оставляем как legacy/unresolved без авто-конверсии в entity
-                normalized = t_lower 
+                normalized = t_lower
                 stats["legacy_nested_tags"] += 1
-                
+
         # 4. Простые теги (без слеша)
         else:
             if t_lower in TYPE_WHITELIST:
@@ -158,7 +161,7 @@ def normalize_tags(raw_tags: list, stats: dict) -> tuple[list[str], bool]:
 def process_file(file_path: Path, args: argparse.Namespace, stats: dict) -> None:
     """Обрабатывает один Markdown файл с учетом политик Phase 1.2."""
     stats["scanned"] += 1
-    
+
     try:
         content = file_path.read_text(encoding="utf-8")
     except Exception as e:
@@ -167,7 +170,7 @@ def process_file(file_path: Path, args: argparse.Namespace, stats: dict) -> None
         return
 
     yaml_str, body = extract_frontmatter(content)
-    
+
     frontmatter = {}
     if yaml_str:
         try:
@@ -192,7 +195,7 @@ def process_file(file_path: Path, args: argparse.Namespace, stats: dict) -> None
         if args.untagged_policy == "skip":
             stats["skipped_no_tags"] += 1
             return
-            
+
         elif args.untagged_policy == "scaffold":
             if "00 System" in file_path.parts:
                 frontmatter["canonical_title"] = canonical_title
@@ -202,13 +205,13 @@ def process_file(file_path: Path, args: argparse.Namespace, stats: dict) -> None
                 frontmatter["domain_refs"] = []
                 frontmatter["type_refs"] = []
                 frontmatter["relation_refs"] = []
-                
+
                 stats["scaffolded_no_tags"] += 1
                 needs_update = True
             else:
                 stats["skipped_no_tags"] += 1
                 return
-                
+
         elif args.untagged_policy == "classify":
             stats["skipped_no_tags"] += 1
             return
@@ -219,12 +222,12 @@ def process_file(file_path: Path, args: argparse.Namespace, stats: dict) -> None
         if tags_changed:
             frontmatter["tags"] = new_tags
             needs_update = True
-            
+
         for ref_field in ["entity_refs", "domain_refs", "type_refs", "relation_refs"]:
             if ref_field not in frontmatter:
                 frontmatter[ref_field] = []
                 needs_update = True
-                
+
         if "canonical_title" not in frontmatter:
             frontmatter["canonical_title"] = canonical_title
             needs_update = True
@@ -243,7 +246,7 @@ def process_file(file_path: Path, args: argparse.Namespace, stats: dict) -> None
     if args.apply:
         new_yaml_str = yaml.dump(frontmatter, allow_unicode=True, default_flow_style=False, sort_keys=False)
         new_content = f"---\n{new_yaml_str}---\n{body}"
-        
+
         try:
             file_path.write_text(new_content, encoding="utf-8")
             stats["changed"] += 1  # Увеличиваем ТОЛЬКО после успешной записи
@@ -259,14 +262,18 @@ def main() -> None:
     parser.add_argument("--dir", default="/app/vault", help="Путь к корню базы знаний")
     parser.add_argument("--apply", action="store_true", help="Выполнить физическую перезапись файлов")
     parser.add_argument("--dry-run", action="store_true", help="Показать планируемые изменения без записи")
-    parser.add_argument("--untagged-policy", choices=["skip", "scaffold", "classify"], default="skip", 
-                        help="Политика для заметок без тегов (по умолчанию: skip)")
+    parser.add_argument(
+        "--untagged-policy",
+        choices=["skip", "scaffold", "classify"],
+        default="skip",
+        help="Политика для заметок без тегов (по умолчанию: skip)",
+    )
     args = parser.parse_args()
 
     if not args.apply and not args.dry_run:
         print("Ошибка: Необходимо указать --dry-run или --apply")
         sys.exit(1)
-        
+
     if args.apply and args.dry_run:
         print("Ошибка: Нельзя использовать --apply и --dry-run одновременно")
         sys.exit(1)
@@ -288,7 +295,7 @@ def main() -> None:
         "converted_to_entity": 0,
         "converted_to_domain": 0,
         "converted_to_type": 0,
-        "legacy_nested_tags": 0
+        "legacy_nested_tags": 0,
     }
 
     print(f"Запуск Phase 1.2 Migration: {vault_path}")
@@ -303,9 +310,9 @@ def main() -> None:
     for file_path in md_files:
         process_file(file_path, args, stats)
 
-    print("\n" + "="*45)
+    print("\n" + "=" * 45)
     print("MIGRATION REPORT")
-    print("="*45)
+    print("=" * 45)
     print(f"Scanned files:          {stats['scanned']}")
     print(f"Changed files:          {stats['changed']}")
     print(f"Failed (errors):        {stats['failed']}")
@@ -320,7 +327,7 @@ def main() -> None:
     print(f"Converted to domain/*:  {stats['converted_to_domain']}")
     print(f"Converted to type/*:    {stats['converted_to_type']}")
     print(f"Legacy nested tags:     {stats['legacy_nested_tags']}")
-    print("="*45)
+    print("=" * 45)
 
 
 if __name__ == "__main__":

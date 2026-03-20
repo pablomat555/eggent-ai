@@ -52,21 +52,24 @@ def normalize_tags(tags: list[str], is_new_inbox: bool = False) -> list[str]:
         if re.match(r'^\d{4}/[a-zа-я]+$', t_lower):
             parts = clean_original.split('/')
             normalized = f"{parts[0]}/{parts[1].capitalize()}"
-            
+
         # 2. Уже нормализованные
         elif t_lower.startswith(("domain/", "entity/", "type/")):
             normalized = t_lower
-            
+
         # 3. Вложенные теги
         elif "/" in t_lower:
-            prefix = t_lower.split('/')[0]
+            parts = t_lower.split('/', 1)
+            prefix = parts[0]
+            rest_slug = parts[1].replace('/', '-') if len(parts) > 1 else ""
+
             if prefix in DOMAIN_WHITELIST:
-                normalized = f"domain/{t_lower}"
+                normalized = f"domain/{prefix}-{rest_slug}"
             elif prefix in TYPE_WHITELIST:
-                normalized = f"type/{t_lower}"
+                normalized = f"type/{prefix}-{rest_slug}"
             else:
-                normalized = t_lower # legacy/unresolved
-                
+                normalized = t_lower  # legacy/unresolved
+
         # 4. Простые теги
         else:
             if t_lower in TYPE_WHITELIST:
@@ -94,9 +97,9 @@ def build_final_markdown(title: str, content: str, zero_links: list[str], source
     now = datetime.now()
     created_date = now.strftime("%Y-%m-%d %H:%M")
     month_tag = now.strftime("%Y/%b")
-    
+
     clean_title = sanitize_title(title)
-    
+
     # Сборка структуры для YAML
     final_tags = [month_tag]
     for t in tags:
@@ -109,26 +112,26 @@ def build_final_markdown(title: str, content: str, zero_links: list[str], source
         "author": ["Я"],
         "created": created_date
     }
-    
+
     if source_url:
         frontmatter["source_url"] = source_url
 
     # 1. Безопасная генерация YAML
     yaml_str = yaml.dump(frontmatter, allow_unicode=True, default_flow_style=False, sort_keys=False)
-    
+
     # 2. Сборка тела
     rebuilt = f"---\n{yaml_str}---\n\n"
     rebuilt += f"-----\n## {clean_title}\n-----\n\n{content.strip()}\n\n"
-    
+
     # 3. Сборка подвала
     if zero_links:
         rebuilt += "---\n## Zero-links\n---\n"
         rebuilt += "\n".join(f"- {zl}" for zl in zero_links) + "\n"
-        
+
     if source_url:
         rebuilt += "\n---\n## Links\n---\n"
         rebuilt += f"- [Source]({source_url})\n"
-        
+
     return rebuilt
 
 def main():
@@ -156,7 +159,7 @@ def main():
     raw_tags = metadata_dict.get("tags", [])
     raw_zl = metadata_dict.get("zero_links", [])
     error_text = metadata_dict.get("error_text", "Сетевая ошибка / Timeout")
-    
+
     # Читаем флаг is_inbox из метадаты (по умолчанию True для обратной совместимости)
     is_inbox = metadata_dict.get("is_inbox", True)
 
