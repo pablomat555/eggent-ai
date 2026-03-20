@@ -20,6 +20,12 @@ STOP_WORDS: set[str] = {
     "your", "our", "their", "его", "ее", "их", "мой", "моя", "мои", "наш", "наша", "наши",
     "сделай", "найди", "покажи", "расскажи", "нужен", "нужно", "надо", "please",
 }
+# --- PHASE 2 CONSTANTS ---
+SYNTHETIC_RE = re.compile(r"(synthetic|test|injection|aggregated|summary|trap)", re.IGNORECASE)
+ARCHIVE_RE = re.compile(r"(/archives?/|old|legacy|v\d+\.\d+)", re.IGNORECASE)
+CORE_DOC_RE = re.compile(r"(core|protocol|architecture|index|standard)", re.IGNORECASE)
+RELATION_TAGS = {"type/contact", "type/person", "type/dependency", "type/ownership"}
+# -------------------------
 
 NON_ENTITY_TERMS: set[str] = {
     "запрещено", "запрет", "правило", "правила", "чеклист", "аудит", "безопасность",
@@ -415,17 +421,43 @@ def _score_and_extract(
         headings_norm=headings_norm,
     )
 
+    # --- PHASE 2: Hardening Heuristics ---
+    path_str = str(file_path).lower()
     is_system_file = any(tag in SYSTEM_TYPE_TAGS for tag in norm_tags)
     looks_like_prompt = _looks_like_prompt_or_meta(filename_norm, headings_norm)
+    is_archive = bool(ARCHIVE_RE.search(filename_norm)) or "/archives/" in path_str or "/old/" in path_str
+    is_synthetic = bool(SYNTHETIC_RE.search(filename_norm)) or any(bool(SYNTHETIC_RE.search(h)) for h in headings_norm)
+    is_core = bool(CORE_DOC_RE.search(filename_norm))
+    is_relation = any(tag in RELATION_TAGS for tag in norm_tags)
 
-    system_penalty = 0
+    penalty = 0
     if not direct_target:
         if is_system_file:
-            system_penalty -= 8
+            penalty -= 8
         if looks_like_prompt:
-            system_penalty -= 4
+            penalty -= 4
+        if is_archive:
+            penalty -= 20  # Жёсткий штраф за неактуальные документы (Canonical Scoring)
+        if is_synthetic:
+            penalty -= 15  # Штраф за агрегирующий мусор (Synthetic Trap Suppression)
 
-    total_score = base_score + entity_score + system_penalty
+    boost = 0
+    if is_core:
+        boost += 5
+    if is_relation:
+        boost += 5 # Буст для контактных и зависимых узлов
+
+    # Atomic Note Boost
+    content_len = len(content)
+    if 0 < content_len < 1500: # Фокусная короткая заметка
+        if len(entity_matches) == 1:
+            boost += 8 # Идеальная атомарная заметка (1 сущность)
+        elif len(entity_matches) == 2:
+            boost += 5 # Явная связь между 2 сущностями (X -> Y)
+
+    total_score = base_score + entity_score + penalty + boost
+    # --- END PHASE 2 ---
+
     if total_score <= 0 and not direct_target:
         return None
 
