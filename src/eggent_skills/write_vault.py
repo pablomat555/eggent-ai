@@ -100,7 +100,6 @@ def build_final_markdown(title: str, content: str, zero_links: list[str], source
 
     clean_title = sanitize_title(title)
 
-    # Сборка структуры для YAML
     final_tags = [month_tag]
     for t in tags:
         if t and t != month_tag:
@@ -116,14 +115,11 @@ def build_final_markdown(title: str, content: str, zero_links: list[str], source
     if source_url:
         frontmatter["source_url"] = source_url
 
-    # 1. Безопасная генерация YAML
     yaml_str = yaml.dump(frontmatter, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
-    # 2. Сборка тела
     rebuilt = f"---\n{yaml_str}---\n\n"
     rebuilt += f"-----\n## {clean_title}\n-----\n\n{content.strip()}\n\n"
 
-    # 3. Сборка подвала
     if zero_links:
         rebuilt += "---\n## Zero-links\n---\n"
         rebuilt += "\n".join(f"- {zl}" for zl in zero_links) + "\n"
@@ -139,14 +135,8 @@ def main():
     parser.add_argument("--title", required=True, help="Note title")
     parser.add_argument("--content", required=True, help="Note raw content")
     parser.add_argument("--metadata", required=True, help="JSON metadata")
+    parser.add_argument("--eval-mode", action="store_true", help="Simulate write without sending to n8n")
     args = parser.parse_args()
-
-    webhook_url = os.getenv("N8N_WEBHOOK_URL")
-    secret_token = os.getenv("N8N_WEBHOOK_SECRET")
-
-    if not webhook_url or not secret_token:
-        print("Error: N8N_WEBHOOK_URL or N8N_WEBHOOK_SECRET missing.", file=sys.stderr)
-        sys.exit(1)
 
     try:
         metadata_dict = json.loads(args.metadata)
@@ -159,11 +149,12 @@ def main():
     raw_tags = metadata_dict.get("tags", [])
     raw_zl = metadata_dict.get("zero_links", [])
     error_text = metadata_dict.get("error_text", "Сетевая ошибка / Timeout")
-
-    # Читаем флаг is_inbox из метадаты (по умолчанию True для обратной совместимости)
     is_inbox = metadata_dict.get("is_inbox", True)
 
-    clean_tags = normalize_tags(raw_tags if isinstance(raw_tags, list) else [raw_tags], is_new_inbox=is_inbox)
+    clean_tags = normalize_tags(
+        raw_tags if isinstance(raw_tags, list) else [raw_tags],
+        is_new_inbox=is_inbox
+    )
 
     if status == "paywalled":
         body_text = "Краткое описание страницы скрыто пейволом.\n\nСтатус: Paywalled"
@@ -175,7 +166,30 @@ def main():
         body_text = args.content
         final_zl = normalize_zero_links(raw_zl)
 
-    full_file_content = build_final_markdown(args.title, body_text, final_zl, source_url, clean_tags)
+    full_file_content = build_final_markdown(
+        args.title,
+        body_text,
+        final_zl,
+        source_url,
+        clean_tags
+    )
+
+    if args.eval_mode:
+        print(json.dumps({
+            "status": "eval_success",
+            "message": "EVAL MODE: Note would have been saved.",
+            "preview_title": args.title,
+            "preview_tags": clean_tags,
+            "content_length": len(full_file_content)
+        }, ensure_ascii=False, indent=2))
+        return
+
+    webhook_url = os.getenv("N8N_WEBHOOK_URL")
+    secret_token = os.getenv("N8N_WEBHOOK_SECRET")
+
+    if not webhook_url or not secret_token:
+        print("Error: N8N_WEBHOOK_URL or N8N_WEBHOOK_SECRET missing.", file=sys.stderr)
+        sys.exit(1)
 
     payload = {
         "title": args.title,

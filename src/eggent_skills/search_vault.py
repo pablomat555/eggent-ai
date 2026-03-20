@@ -20,12 +20,11 @@ STOP_WORDS: set[str] = {
     "your", "our", "their", "его", "ее", "их", "мой", "моя", "мои", "наш", "наша", "наши",
     "сделай", "найди", "покажи", "расскажи", "нужен", "нужно", "надо", "please",
 }
-# --- PHASE 2 CONSTANTS ---
+
 SYNTHETIC_RE = re.compile(r"(synthetic|test|injection|aggregated|summary|trap)", re.IGNORECASE)
 ARCHIVE_RE = re.compile(r"(/archives?/|old|legacy|v\d+\.\d+)", re.IGNORECASE)
 CORE_DOC_RE = re.compile(r"(core|protocol|architecture|index|standard)", re.IGNORECASE)
 RELATION_TAGS = {"type/contact", "type/person", "type/dependency", "type/ownership"}
-# -------------------------
 
 NON_ENTITY_TERMS: set[str] = {
     "запрещено", "запрет", "правило", "правила", "чеклист", "аудит", "безопасность",
@@ -382,6 +381,7 @@ def _score_and_extract(
     content: str,
     keywords: list[str],
     validated_entities: list[str],
+    query: str,
 ) -> dict[str, Any] | None:
     content_norm = _normalize_text(content)
     if not content_norm:
@@ -389,74 +389,47 @@ def _score_and_extract(
 
     raw_tags = _parse_tags(content)
     norm_tags = [_normalize_tag(t) for t in raw_tags if _normalize_tag(t)]
-
     h1 = _extract_h1(content)
     h1_norm = _normalize_text(h1)
-
-    paragraphs = _split_paragraphs(content)
-    paragraphs_norm = [_normalize_text(p) for p in paragraphs if _normalize_text(p)]
-
-    headings_norm: list[str] = []
-    for para in paragraphs:
-        if HEADING_RE.match(para.strip()):
-            headings_norm.append(_normalize_text(para))
-
     filename_norm = _normalize_text(BACKUP_SUFFIX_RE.sub("", file_path.stem))
-    first_200_norm = _normalize_text(content[:200])
-    filename_aliases = _filename_aliases(file_path)
 
     base_score = _compute_base_score(
         filename_norm=filename_norm,
-        headings_norm=headings_norm,
-        first_200_norm=first_200_norm,
-        paragraphs_norm=paragraphs_norm,
+        headings_norm=[],
+        first_200_norm=_normalize_text(content[:200]),
+        paragraphs_norm=[],
         keywords=keywords,
     )
 
     entity_score, entity_matches, direct_target = _compute_entity_score(
         validated_entities=validated_entities,
         norm_tags=norm_tags,
-        filename_aliases=filename_aliases,
+        filename_aliases={filename_norm},
         h1_norm=h1_norm,
-        headings_norm=headings_norm,
+        headings_norm=[],
     )
 
-    # --- PHASE 2: Hardening Heuristics ---
+    canonical_boost = 0
+    query_norm = _normalize_text(query)
+
+    if query_norm == filename_norm or (h1_norm and query_norm == h1_norm):
+        canonical_boost += 40
+    elif query_norm in filename_norm:
+        canonical_boost += 20
+
+    if any(tag in {"type/system", "type/protocol", "system", "protocol"} for tag in norm_tags):
+        canonical_boost += 15
+
+    if filename_norm.startswith("00 "):
+        canonical_boost += 10
+
     path_str = str(file_path).lower()
-    is_system_file = any(tag in SYSTEM_TYPE_TAGS for tag in norm_tags)
-    looks_like_prompt = _looks_like_prompt_or_meta(filename_norm, headings_norm)
-    is_archive = bool(ARCHIVE_RE.search(filename_norm)) or "/archives/" in path_str or "/old/" in path_str
-    is_synthetic = bool(SYNTHETIC_RE.search(filename_norm)) or any(bool(SYNTHETIC_RE.search(h)) for h in headings_norm)
-    is_core = bool(CORE_DOC_RE.search(filename_norm))
-    is_relation = any(tag in RELATION_TAGS for tag in norm_tags)
-
+    is_archive = bool(ARCHIVE_RE.search(filename_norm)) or "/archives/" in path_str
     penalty = 0
-    if not direct_target:
-        if is_system_file:
-            penalty -= 8
-        if looks_like_prompt:
-            penalty -= 4
-        if is_archive:
-            penalty -= 20  # Жёсткий штраф за неактуальные документы (Canonical Scoring)
-        if is_synthetic:
-            penalty -= 15  # Штраф за агрегирующий мусор (Synthetic Trap Suppression)
+    if is_archive:
+        penalty -= 30
 
-    boost = 0
-    if is_core:
-        boost += 5
-    if is_relation:
-        boost += 5 # Буст для контактных и зависимых узлов
-
-    # Atomic Note Boost
-    content_len = len(content)
-    if 0 < content_len < 1500: # Фокусная короткая заметка
-        if len(entity_matches) == 1:
-            boost += 8 # Идеальная атомарная заметка (1 сущность)
-        elif len(entity_matches) == 2:
-            boost += 5 # Явная связь между 2 сущностями (X -> Y)
-
-    total_score = base_score + entity_score + penalty + boost
-    # --- END PHASE 2 ---
+    total_score = base_score + entity_score + canonical_boost + penalty
 
     if total_score <= 0 and not direct_target:
         return None
@@ -466,20 +439,44 @@ def _score_and_extract(
         "file": file_path.name,
         "path": str(file_path),
         "score": total_score,
+        "canonical_boost": canonical_boost,
         "entity_score": entity_score,
-        "entity_matches": entity_matches,
         "tags": raw_tags,
-        "snippet": _extract_best_snippet(paragraphs, keywords),
+        "snippet": content[:300] + "...",
     }
 
 
-def execute_search(vault_dir: str | Path, query: str) -> dict[str, Any]:
-    vault_path = Path(vault_dir)
-    if not vault_path.exists() or not vault_path.is_dir():
-        print(f"Vault path not found: {vault_path}", file=sys.stderr)
+def execute_search(vault_dir: str | Path, query: str, subdir: str = "") -> dict[str, Any]:
+    base_path = Path(vault_dir).resolve()
+
+    if not base_path.exists() or not base_path.is_dir():
+        print(f"Vault path not found: {base_path}", file=sys.stderr)
         return {
             "status": "error",
             "error_message": "Vault path does not exist",
+            "results": [],
+        }
+
+    search_path = (base_path / subdir).resolve()
+
+    if not search_path.exists():
+        return {
+            "status": "error",
+            "error_message": f"Path not found: {subdir}",
+            "results": [],
+        }
+
+    if not search_path.is_relative_to(base_path):
+        return {
+            "status": "error",
+            "error_message": "Security Alert: Search directory is outside the allowed vault root",
+            "results": [],
+        }
+
+    if not search_path.is_dir():
+        return {
+            "status": "error",
+            "error_message": f"Search path is not a directory: {subdir}",
             "results": [],
         }
 
@@ -491,11 +488,11 @@ def execute_search(vault_dir: str | Path, query: str) -> dict[str, Any]:
             "results": [],
         }
 
-    entity_registry = _build_entity_registry(vault_path)
+    entity_registry = _build_entity_registry(base_path)
     validated_entities = _extract_validated_entities(keywords, query, entity_registry)
 
     valid_md_files = [
-        p for p in vault_path.rglob("*.md")
+        p for p in search_path.rglob("*.md")
         if not should_skip_path(p) and not is_backup_file(p.name)
     ]
 
@@ -539,6 +536,7 @@ def execute_search(vault_dir: str | Path, query: str) -> dict[str, Any]:
                     content=content,
                     keywords=keywords,
                     validated_entities=validated_entities,
+                    query=query,
                 )
                 if res:
                     pass_results.append(res)
@@ -557,7 +555,6 @@ def execute_search(vault_dir: str | Path, query: str) -> dict[str, Any]:
             "results": [],
         }
 
-    # Берём лучший документ на canonical title.
     results.sort(key=lambda x: (-x["entity_score"], -x["score"], x["file"], x["path"]))
 
     unique_results: list[dict[str, Any]] = []
@@ -593,9 +590,14 @@ def main() -> None:
         default="/app/vault",
         help="Путь к корню базы знаний внутри контейнера",
     )
+    parser.add_argument(
+        "--subdir",
+        default="",
+        help="Ограничить поиск папкой (например, '00 System')",
+    )
     args = parser.parse_args()
 
-    result = execute_search(args.dir, args.query)
+    result = execute_search(args.dir, args.query, args.subdir)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
