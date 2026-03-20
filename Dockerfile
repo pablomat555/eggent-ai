@@ -39,7 +39,7 @@ RUN apt-get update \
     sudo \
     ripgrep \
   && python3 -m venv --system-site-packages "${PYTHON_VENV}" \
-  && "${PYTHON_VENV}/bin/pip" install --no-cache-dir loguru requests \
+  && "${PYTHON_VENV}/bin/pip" install --no-cache-dir loguru requests PyYAML \
   && rm -rf /var/lib/apt/lists/*
 
 RUN echo "node ALL=(root) NOPASSWD: ALL" > /etc/sudoers.d/eggent-node \
