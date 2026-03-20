@@ -174,13 +174,20 @@ def main():
         clean_tags
     )
 
-    if args.eval_mode:
+    eval_mode_env = os.getenv("EGGENT_EVAL_MODE", "false").lower() == "true"
+
+    if eval_mode_env or args.eval_mode:
         print(json.dumps({
+            "ok": True,
             "status": "eval_success",
-            "message": "EVAL MODE: Note would have been saved.",
-            "preview_title": args.title,
-            "preview_tags": clean_tags,
-            "content_length": len(full_file_content)
+            "mode": "eval",
+            "action": "skipped_write",
+            "reason": "EGGENT_EVAL_MODE is enabled",
+            "preview": {
+                "title": args.title,
+                "tags": clean_tags,
+                "zl_count": len(final_zl)
+            }
         }, ensure_ascii=False, indent=2))
         return
 

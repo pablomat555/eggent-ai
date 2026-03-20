@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import unicodedata
@@ -69,7 +70,8 @@ def _normalize_text(value: str) -> str:
     value = value.strip().lower()
     value = value.replace("ё", "е")
     value = re.sub(r"[\"'`“”‘’]", "", value)
-    value = re.sub(r"[_/]+", " ", value)
+    value = value.replace("_", " ")
+    value = value.replace("/", " ")
     value = re.sub(r"[^0-9a-zа-яіїєґ+\-.\s]", " ", value, flags=re.IGNORECASE)
     value = re.sub(r"\s+", " ", value).strip()
     return value
@@ -447,7 +449,15 @@ def _score_and_extract(
 
 
 def execute_search(vault_dir: str | Path, query: str, subdir: str = "") -> dict[str, Any]:
+    eval_mode = os.getenv("EGGENT_EVAL_MODE", "false").lower() == "true"
     base_path = Path(vault_dir).resolve()
+
+    if eval_mode and not subdir:
+        return {
+            "status": "error",
+            "error": "eval_mode_requires_restricted_scope",
+            "message": "В режиме оценки поиск без указания --subdir (напр. '00 System') запрещен.",
+        }
 
     if not base_path.exists() or not base_path.is_dir():
         print(f"Vault path not found: {base_path}", file=sys.stderr)
@@ -553,6 +563,12 @@ def execute_search(vault_dir: str | Path, query: str, subdir: str = "") -> dict[
         return {
             "status": "no_results",
             "results": [],
+            "debug": {
+                "eval_mode": eval_mode,
+                "effective_subdir": subdir,
+                "keywords": keywords,
+                "result_count": 0,
+            },
         }
 
     results.sort(key=lambda x: (-x["entity_score"], -x["score"], x["file"], x["path"]))
@@ -579,6 +595,12 @@ def execute_search(vault_dir: str | Path, query: str, subdir: str = "") -> dict[
     return {
         "status": "ok",
         "results": unique_results[:3],
+        "debug": {
+            "eval_mode": eval_mode,
+            "effective_subdir": subdir,
+            "keywords": keywords,
+            "result_count": len(unique_results),
+        },
     }
 
 

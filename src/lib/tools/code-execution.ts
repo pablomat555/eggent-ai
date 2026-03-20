@@ -446,7 +446,12 @@ function prepareExecution(params: {
 }
 
 function buildPythonEnv(cwd: string): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, PYTHONUNBUFFERED: "1" };
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    PYTHONUNBUFFERED: "1",
+    EGGENT_EVAL_MODE: process.env.EGGENT_EVAL_MODE || "false",
+  };
+
   const venvDir = resolveProjectVenvDir(cwd);
   if (!venvDir) {
     return env;
@@ -731,7 +736,7 @@ function formatManagedSessionRunning(session: ManagedProcessSession, immediate: 
     `Session ID: ${session.id}\n` +
     `Runtime: ${session.runtime}\n` +
     `PID: ${session.pid ?? "n/a"}\n` +
-    `Use process tool (action=\"poll\") with session_id=\"${session.id}\" to continue.`
+    `Use process tool (action="poll") with session_id="${session.id}" to continue.`
   );
 }
 
