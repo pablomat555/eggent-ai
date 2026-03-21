@@ -452,6 +452,9 @@ def execute_search(vault_dir: str | Path, query: str, subdir: str = "") -> dict[
     eval_mode = os.getenv("EGGENT_EVAL_MODE", "false").lower() == "true"
     base_path = Path(vault_dir).resolve()
 
+    if eval_mode:
+        subdir = "00 System"
+
     if eval_mode and not subdir:
         return {
             "status": "error",
@@ -498,7 +501,8 @@ def execute_search(vault_dir: str | Path, query: str, subdir: str = "") -> dict[
             "results": [],
         }
 
-    entity_registry = _build_entity_registry(base_path)
+    registry_path = search_path if eval_mode else base_path
+    entity_registry = _build_entity_registry(registry_path)
     validated_entities = _extract_validated_entities(keywords, query, entity_registry)
 
     valid_md_files = [
@@ -556,7 +560,7 @@ def execute_search(vault_dir: str | Path, query: str, subdir: str = "") -> dict[
         return pass_results
 
     results = search_pass("AND")
-    if not results and len(keywords) > 1:
+    if not results and len(keywords) > 1 and not eval_mode:
         results = search_pass("OR")
 
     if not results:

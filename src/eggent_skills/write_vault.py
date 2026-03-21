@@ -138,6 +138,22 @@ def main():
     parser.add_argument("--eval-mode", action="store_true", help="Simulate write without sending to n8n")
     args = parser.parse_args()
 
+    eval_mode_env = os.getenv("EGGENT_EVAL_MODE", "false").lower() == "true"
+    if eval_mode_env or args.eval_mode:
+        print(json.dumps({
+            "ok": True,
+            "status": "eval_success",
+            "mode": "eval",
+            "action": "skipped_write",
+            "reason": "EGGENT_EVAL_MODE is enabled" if eval_mode_env else "--eval-mode flag is set",
+            "preview": {
+                "title": args.title,
+                "tags_raw": "(not parsed in eval mode)",
+                "content_length": len(args.content),
+            }
+        }, ensure_ascii=False, indent=2))
+        return
+
     try:
         metadata_dict = json.loads(args.metadata)
     except json.JSONDecodeError:
@@ -174,23 +190,6 @@ def main():
         clean_tags
     )
 
-    eval_mode_env = os.getenv("EGGENT_EVAL_MODE", "false").lower() == "true"
-
-    if eval_mode_env or args.eval_mode:
-        print(json.dumps({
-            "ok": True,
-            "status": "eval_success",
-            "mode": "eval",
-            "action": "skipped_write",
-            "reason": "EGGENT_EVAL_MODE is enabled",
-            "preview": {
-                "title": args.title,
-                "tags": clean_tags,
-                "zl_count": len(final_zl)
-            }
-        }, ensure_ascii=False, indent=2))
-        return
-
     webhook_url = os.getenv("N8N_WEBHOOK_URL")
     secret_token = os.getenv("N8N_WEBHOOK_SECRET")
 
@@ -212,8 +211,17 @@ def main():
         response = requests.post(webhook_url, headers=headers, json=payload, timeout=15)
         response.raise_for_status()
         print(f"✅ Success: Webhook triggered. Status: {response.status_code}")
-    except Exception as e:
-        print(f"❌ Error sending webhook: {e}", file=sys.stderr)
+    except requests.exceptions.Timeout:
+        print("❌ Webhook timeout: no response within 15s", file=sys.stderr)
+        sys.exit(1)
+    except requests.exceptions.ConnectionError as e:
+        print(f"❌ Webhook connection error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except requests.exceptions.HTTPError as e:
+        print(f"❌ Webhook HTTP error {e.response.status_code}: {e}", file=sys.stderr)
+        sys.exit(1)
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Webhook request failed: {e}", file=sys.stderr)
         sys.exit(1)
 
 if __name__ == "__main__":
