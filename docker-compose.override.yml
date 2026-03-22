@@ -3,6 +3,8 @@ services:
     networks:
       - default
       - voice-assistant_voice_net
+    environment:
+      EGGENT_EVAL_MODE: "true"
     volumes:
       # База знаний монтируется СТРОГО как RO (Read-Only)
       - /var/syncthing/vault:/app/vault:ro
